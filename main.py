@@ -46,6 +46,7 @@ def fetch_historical_data(symbol,days=30,timeout=5):
         print(f"Error fetching data: {e}")
         return None
 
+#testin
 if __name__== "__main__":
     now=fetch_historical_data('BTCUSDT',days=30)
     print(now.head(5))
