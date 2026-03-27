@@ -3,3 +3,90 @@
 __pycache__/
 logs/
 .venv/
+
+# ============================================
+# VIRTUAL ENVIRONMENTS
+# ============================================
+venv/
+env/
+.venv/
+ENV/
+venv.bak/
+env.bak/
+
+# ============================================
+# PYTHON
+# ============================================
+__pycache__/
+*.py[cod]           # .pyc, .pyo, .pyd
+*$py.class
+*.so                # C extensions
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# ============================================
+# IDE & EDITORS
+# ============================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+.project
+.pydevproject
+.settings/
+
+# ============================================
+# TESTING & COVERAGE
+# ============================================
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# ============================================
+# PROJECT-SPECIFIC (TRADING BOT)
+# ============================================
+# Data files
+*.json              # Predictions, validation logs, prices
+*.csv
+*.xlsx
+
+# Logs
+*.log
+logs/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+
+# OS-specific
+Thumbs.db
+.DS_Store
+EOF
