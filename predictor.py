@@ -21,9 +21,13 @@ class PricePredictor:
         ]
     
         self.model = RandomForestClassifier(
-            n_estimators=100, #nr trees
+            n_estimators=400, #nr trees
             max_depth=5, #nr lyrs
-            random_state=42 #reproducible results
+            min_samples_leaf=20,
+            min_samples_split=30,
+            class_weight='balanced',
+            random_state=42,
+            n_jobs=-1 #reproducible results 
         )
 
     def prepare_data(self, prices, volumes=None):
@@ -97,7 +101,7 @@ class PricePredictor:
             change = (next_price - current_price) / current_price
 
             # abt 1% real life fees
-            threshold = 0.001
+            threshold = 0.003
 
             if change > threshold:
                 label = 1 # UP
@@ -212,6 +216,7 @@ class PricePredictor:
         direction = self.model.predict(features)[0]
         probabilities = self.model.predict_proba(features)[0]
         confidence = probabilities[direction]
+
         
         return direction, confidence
 
@@ -232,6 +237,7 @@ class PricePredictor:
         prices_test = prices[split_idx + self.lookback_period:]
 
         y_pred = self.model.predict(X_test)
+        probs =self.model.predict_proba(X_test)
 
         profit = 0
         trades = 0
@@ -239,6 +245,10 @@ class PricePredictor:
         equity = []  # track equity curve
 
         for i in range(len(y_pred) - 1):
+            confidence=probs[i][y_pred[i]]
+
+            if confidence <0.56:
+                continue
             current = prices_test[i]
             next_p = prices_test[i + 1]
             

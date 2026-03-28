@@ -249,7 +249,7 @@ def live_prediction_validation(predictor, prices, interval='1m', wait_minutes=1)
     """
 
 #new prediction function for signals
-def live_direction_prediction(predictor, prices, volumes=None, interval='1h', wait_minutes=1):
+def live_direction_prediction(predictor, prices, volumes=None, interval='1h', wait_minutes=60):
     """
     Make a live direction prediction, wait for next candle, then validate
     
@@ -270,6 +270,11 @@ def live_direction_prediction(predictor, prices, volumes=None, interval='1h', wa
     
     # Make prediction
     direction, confidence = predictor.predict(prices, volumes)
+
+
+    if confidence <0.56:
+     print(f"print  low confidecne: { confidence:.2%}" )
+     return None 
     current_price = prices[-1]
     
     direction_str = "UP" if direction == 1 else "DOWN"
@@ -378,7 +383,8 @@ if __name__ == "__main__":
 
     # ===== STEP 2: TRAIN MODEL =====
     print("\n[STEP 2] Training model...")
-    predictor = PricePredictor(lookback_period=24)
+    #lookback was 24, but due to inactive hours in market that make noise ->19
+    predictor = PricePredictor(lookback_period=19)
     success = predictor.train(prices, volumes)
 
     if not success:
@@ -390,6 +396,9 @@ if __name__ == "__main__":
      # ===== STEP 3: MAKE PREDICTION =====  
     print("\n[STEP 3] Making prediction on latest data...")
     direction, confidence = predictor.predict(prices, volumes)
+
+    
+
     
     if direction is not None:
         direction_str = "UP" if direction == 1 else "DOWN"
@@ -404,9 +413,11 @@ if __name__ == "__main__":
     print("\n[STEP 4] Simulating profit on test data...")
     profit, equity = predictor.simulate_profit(prices, volumes)
 
+    
+
     # ===== STEP 5: LIVE VALIDATION =====
     print("\n[STEP 5] Starting live validation...")
-    result = live_direction_prediction(predictor, prices, interval='5m', wait_minutes=5)
+    result = live_direction_prediction(predictor, prices, interval='1h', wait_minutes=60)
 
     if result:
         save_validation_log(result)
