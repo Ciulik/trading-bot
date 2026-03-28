@@ -1,134 +1,310 @@
 import numpy as np
-from sklearn.linear_model import LinearRegression
-from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score, precision_score, classification_report
 
 class PricePredictor:
     def __init__(self, lookback_period=24):
-        """
-        Initialize the price predictor
-        
-        Args:
-            lookback_period: Number of hours/candles to use for prediction
-        """
         self.lookback_period = lookback_period
-        self.model = LinearRegression()
-        self.scaler = StandardScaler()
         self.is_trained = False
+    
+        # FIX: these must be strings, not variables
+        self.feature_names = [
+            "recent_momentum",
+            "mean_return",
+            "volatility",
+            "ma_trend",
+            "price_vs_ma",
+            "price_momentum",
+            "rsi",
+            "vol_spike",
+            "volume_pressure"
+        ]
+    
+        self.model = RandomForestClassifier(
+            n_estimators=100, #nr trees
+            max_depth=5, #nr lyrs
+            random_state=42 #reproducible results
+        )
 
-    def prepare_data(self, prices):
-        """
-        Convert prices to X, y format for training
-        
-        Args:
-            prices: List of prices
-        
-        Returns:
-            tuple: (X, y) numpy arrays
-        """
-        self.prices = prices
+    def prepare_data(self, prices, volumes=None):
         X = []
         y = []
 
         # Loop through valid positions
         for i in range(len(prices) - self.lookback_period):
             # Get lookback_period prices as features
-            X_window = prices[i : i + self.lookback_period]
-            X.append(X_window)
+            window = np.array(prices[i: i + self.lookback_period])
 
-            # Get the next price as target
-            y_value = prices[i + self.lookback_period]
-            y.append(y_value)
+            # feature 1 /returns
+            returns = np.diff(window) / window[:-1]
+
+            # feature 2 /recent momentum
+            recent_momentum = returns[-1]
+
+            # feature 3 / mean return (trend)
+            mean_return = np.mean(returns)
+
+            # feature 4 volatility
+            volatility = np.std(returns)
+
+            # feature 5 MA trend
+            # short MA above long MA = uptrend
+            short_ma = np.mean(window[-5:])
+            long_ma = np.mean(window[-20:])
+            ma_trend = short_ma - long_ma
+            
+            # feature 6 price vs MA
+            price_vs_ma = (window[-1] - long_ma) / (long_ma + 1e-6)
+            
+            # feature 7 momentum /price diff
+            price_momentum = window[-1] - window[0]
+
+            # feature 8 RSI
+            gains = [r for r in returns if r > 0]
+            losses = [abs(r) for r in returns if r < 0]
+            avg_gain = np.mean(gains) if gains else 0
+            avg_loss = np.mean(losses) if losses else 1e-6
+            rs = avg_gain / avg_loss
+            rsi = 100 - (100 / (1 + rs))
+
+            # feature 9+10 if available
+            if volumes is not None:
+                vol_window = np.array(volumes[i:i + self.lookback_period])
+                vol_mean = np.mean(vol_window[:-1])
+                vol_spike = vol_window[-1] / (vol_mean + 1e-6)
+                price_change = (window[-1] - window[-2]) / (window[-2] + 1e-6)
+                volume_pressure = price_change * vol_spike
+            else:
+                vol_spike = 0
+                volume_pressure = 0
+
+            # BUILD FEATURE VECTORS
+            features = [
+                recent_momentum,
+                mean_return,
+                volatility,
+                ma_trend,
+                price_vs_ma,
+                price_momentum,
+                rsi,
+                vol_spike,
+                volume_pressure
+            ]
+
+            # LABEL
+            next_price = prices[i + self.lookback_period]
+            current_price = window[-1]
+            change = (next_price - current_price) / current_price
+
+            # abt 1% real life fees
+            threshold = 0.001
+
+            if change > threshold:
+                label = 1 # UP
+            elif change < -threshold:
+                label = 0 # DOWN
+            else:
+                continue # searching for a better value 
+
+            X.append(features)
+            y.append(label)
 
         return np.array(X), np.array(y)
 
-    def train(self, prices):
-        """
-        Train the model on historical prices
-        
-        Args:
-            prices: List of historical prices
-        
-        Returns:
-            bool: True if training succeeded, False otherwise
-        """
-        # Check if we have enough data
-        if not prices or len(prices) < self.lookback_period + 1:
-            print(f"Not enough data. Need at least {self.lookback_period + 1} prices, got {len(prices)}")
+    def train(self, prices, volumes=None):
+        X, y = self.prepare_data(prices, volumes)
+
+        if len(X) < 10:
+            print('Not enough data to train')
             return False
+        
+        # check class balance first
+        up_pct = np.mean(y)
+        print(f"Class balance → UP: {up_pct:.1%} | DOWN: {1-up_pct:.1%}")
 
-        # Get X, y from prepare_data
-        X, y = self.prepare_data(prices)
-
-        if len(X) < 2:
-            print("Not enough data to train")
-            return False
-
-        # Normalize X using StandardScaler
-        X_scaled = self.scaler.fit_transform(X)
-
-        # Train the model
-        self.model.fit(X_scaled, y)
-
-        # Set the flag
+        # split 80/20; no shuffle for time series
+        split_idx = int(len(X) * 0.8)
+        X_train, X_test = X[:split_idx], X[split_idx:]
+        y_train, y_test = y[:split_idx], y[split_idx:]
+        
+        # train
+        self.model.fit(X_train, y_train)
         self.is_trained = True
 
-        # Calculate R² score (confidence)
-        score = self.model.score(X_scaled, y)
-        print(f"Model trained! R² score: {score:.4f}")
-
-        return True
-
-    def predict(self, prices):
-        """
-        Predict the next price
+        # evaluate
+        y_pred_train = self.model.predict(X_train)
+        y_pred_test = self.model.predict(X_test)
         
-        Args:
-            prices: List of recent prices
+        print(f"\nTrain accuracy: {accuracy_score(y_train, y_pred_train):.2%}")
+        print(f"Test accuracy:  {accuracy_score(y_test, y_pred_test):.2%}")
+        print(f"Test precision: {precision_score(y_test, y_pred_test):.2%}")
         
-        Returns:
-            tuple: (predicted_price, confidence_score)
-        """
-        # Check if model is trained
+        print(f"\nClassification Report:")
+        print(classification_report(y_test, y_pred_test))
+        
+        # Feature importance
+        print("Feature Importances:")
+        importances = self.model.feature_importances_
+        for name, imp in sorted(
+            zip(self.feature_names, importances),
+            key=lambda x: x[1],
+            reverse=True
+        ):
+            bar = '||' * int(imp * 100)
+            print(f"{name:<20} {imp:.4f} {bar}")
+
+        return True 
+    
+    def predict(self, prices, volumes=None):
         if not self.is_trained:
             print("Model not trained!")
             return None, 0
-
-        # Check if we have enough data
+        
         if len(prices) < self.lookback_period:
-            print(f"Not enough data for prediction. Need {self.lookback_period} prices, got {len(prices)}")
+            print(f"Not enough data. Need {self.lookback_period}, got {len(prices)}")
             return None, 0
+        
+        window = np.array(prices[-self.lookback_period:])
+        
+        returns = np.diff(window) / window[:-1]
+        recent_momentum = returns[-1]
+        mean_return = np.mean(returns)
+        volatility = np.std(returns)
+        
+        short_ma = np.mean(window[-5:])
+        long_ma = np.mean(window[-20:])
+        ma_trend = short_ma - long_ma
+        
+        price_vs_ma = (window[-1] - long_ma) / (long_ma + 1e-6)
 
-        # Get the last lookback_period prices
-        recent_prices = prices[-self.lookback_period:]
+        # FIX: scalar, not vector
+        price_momentum = window[-1] - window[0]
+        
+        gains = [r for r in returns if r > 0]
+        losses = [abs(r) for r in returns if r < 0]
+        avg_gain = np.mean(gains) if gains else 0
+        avg_loss = np.mean(losses) if losses else 1e-6
+        rs = avg_gain / avg_loss
+        rsi = 100 - (100 / (1 + rs))
+        
+        if volumes is not None:
+            vol_window = np.array(volumes[-self.lookback_period:])
+            vol_mean = np.mean(vol_window[:-1])
+            vol_spike = vol_window[-1] / (vol_mean + 1e-6)
+            price_change = (window[-1] - window[-2]) / (window[-2] + 1e-6)
+            volume_pressure = price_change * vol_spike
+        else:
+            vol_spike = 0
+            volume_pressure = 0
+        
+        features = np.array([[
+            recent_momentum,
+            mean_return,
+            volatility,
+            ma_trend,
+            price_vs_ma,
+            price_momentum,
+            rsi,
+            vol_spike,
+            volume_pressure,
+        ]])
+        
+        direction = self.model.predict(features)[0]
+        probabilities = self.model.predict_proba(features)[0]
+        confidence = probabilities[direction]
+        
+        return direction, confidence
 
-        # Reshape to 2D array (1 sample, lookback_period features)
-        recent_array = np.array([recent_prices])
+    def simulate_profit(self, prices, volumes=None, fee=0.001):
+        """
+        Simulate trading based on predictions
+        fee = 0.001 means 0.1% per trade (Binance standard)
+        """
+        X, y = self.prepare_data(prices, volumes)
 
-        # Normalize using the learned scaler
-        recent_scaled = self.scaler.transform(recent_array)
+        # use last 20%
+        if len(X) < 10:
+            print("Not enough data to simulate")
+            return None, None      
+            
+        split_idx = int(len(X) * 0.8)
+        X_test = X[split_idx:]
+        prices_test = prices[split_idx + self.lookback_period:]
 
-        # Make prediction
-        predicted_array = self.model.predict(recent_scaled)
-        predicted_price = predicted_array  # Extract scalar value
+        y_pred = self.model.predict(X_test)
 
-        # Calculate confidence on training data
-        X, y = self.prepare_data(prices)
-        X_scaled = self.scaler.transform(X)
-        confidence = self.model.score(X_scaled, y)
+        profit = 0
+        trades = 0
+        wins = 0
+        equity = []  # track equity curve
 
-        return predicted_price, confidence
+        for i in range(len(y_pred) - 1):
+            current = prices_test[i]
+            next_p = prices_test[i + 1]
+            
+            if y_pred[i] == 1: # predicted up: buy
+                raw_profit = (next_p - current) / current
+            else: # predicted down: sell
+                raw_profit = (current - next_p) / current
 
+            profit += raw_profit - fee
+            trades += 1
+            wins += 1 if raw_profit > 0 else 0
+            
+            equity.append(profit)
+
+        win_rate = wins / trades if trades > 0 else 0 
+
+        print(f"\n{'='*40}")
+        print(f"PROFIT SIMULATION RESULTS")
+        print(f"{'='*40}")
+        print(f"Total trades:   {trades}")
+        print(f"Win rate:       {win_rate:.2%}")
+        print(f"Total return:   {profit:.2%}")
+        print(f"Avg per trade:  {profit/trades:.4%}" if trades > 0 else "No trades")
+        
+        # max drawdown
+        peak = 0
+        max_dd = 0
+        
+        for e in equity:
+            peak = max(peak, e)
+            drawdown = peak - e
+            max_dd = max(max_dd, drawdown)
+            
+        print(f"Max drawdown:   {max_dd:.2%}")
+        print(f"{'='*40}")
+        
+        return profit, equity
 
 if __name__ == "__main__":
-    # Test with sample data
-    predictor = PricePredictor(lookback_period=3)
-    sample_prices = [100, 105, 110, 115, 120, 125, 130, 135, 140, 145]
-
-    # Train
-    predictor.train(sample_prices)
-
-    # Predict
-    predicted, confidence = predictor.predict(sample_prices)
-
-    print(f"Predicted price: ${predicted:.2f}")
-    print(f"Confidence: {confidence:.2%}")
+    print("="*70)
+    print("TESTING DirectionPredictor - Day 2")
+    print("="*70)
+    
+    # Sample data
+    sample_prices = [100, 102, 101, 105, 103, 108, 106, 110, 109, 115, 
+                     113, 120, 118, 125, 123, 130, 128, 135, 133, 140,
+                     138, 145, 143, 150, 148, 155, 153, 160, 158, 165]
+    
+    # Create and train
+    predictor = PricePredictor(lookback_period=5)
+    success = predictor.train(sample_prices)
+    
+    if success:
+        print("\n" + "="*70)
+        print("MAKING PREDICTIONS")
+        print("="*70)
+        
+        direction, confidence = predictor.predict(sample_prices)
+        
+        if direction is not None:
+            direction_str = "UP" if direction == 1 else "DOWN"
+            print(f"\nPredicted direction: {direction_str}")
+            print(f"Confidence: {confidence:.2%}")
+        
+        print("\n" + "="*70)
+        print("SIMULATING PROFIT")
+        print("="*70)
+        
+        profit, equity = predictor.simulate_profit(sample_prices)
