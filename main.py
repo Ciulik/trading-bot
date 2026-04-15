@@ -5,6 +5,8 @@ import json
 import time
 from datetime import datetime
 from predictor import PricePredictor
+from trade_manager import TradeManager
+from risk_manager import RiskManager
 
 # Show all columns
 pd.set_option('display.max_columns', None)
@@ -272,7 +274,7 @@ def live_direction_prediction(predictor, prices, volumes=None, interval='1h', wa
     direction, confidence = predictor.predict(prices, volumes)
 
 
-    if confidence <0.56:
+    if confidence <0.55:
      print(f"print  low confidecne: { confidence:.2%}" )
      return None 
     current_price = prices[-1]
@@ -288,14 +290,14 @@ def live_direction_prediction(predictor, prices, volumes=None, interval='1h', wa
     
     # Wait for next candle
     wait_seconds = wait_minutes * 60
-    print(f"\n⏳ Waiting {wait_minutes} minute(s) for next candle to close...")
+    print(f"\n Waiting {wait_minutes} minute(s) for next candle to close...")
     print("-" * 70)
     
     # Countdown timer
     for i in range(wait_seconds, 0, -1):
         minutes_left = i // 60
         seconds_left = i % 60
-        print(f"⏱️  {minutes_left:02d}:{seconds_left:02d} remaining...", end='\r')
+        print(f" {minutes_left:02d}:{seconds_left:02d} remaining...", end='\r')
         time.sleep(1)
     
     print("\n✓ Next candle has closed! Fetching new data...")
@@ -320,9 +322,9 @@ def live_direction_prediction(predictor, prices, volumes=None, interval='1h', wa
     
     # Determine result
     if direction_correct:
-        result = "✅ CORRECT"
+        result = " CORRECT"
     else:
-        result = "❌ WRONG"
+        result = " WRONG"
     
     # Display results
     print("\n" + "="*70)
@@ -361,68 +363,161 @@ def live_direction_prediction(predictor, prices, volumes=None, interval='1h', wa
     return prediction_data
 
 if __name__ == "__main__":
-    print("\n" + "="*70)
-    print("TRADING BOT - LIVE PREDICTION VALIDATION")
+    print("="*70)
+    print("TRADING BOT - DAY 3")
     print("="*70)
 
-    # ===== STEP 1: FETCH DATA =====
-    print("\n[STEP 1] Fetching data...")
+    # STEP 1: FETCH DATA
+    print("\n[STEP 1] Fetching historical data...")
     df = fetch_historical_data('BTCUSDT', days=30, interval='1h')
 
     if df is None:
-        print("✗ Failed to fetch data")
         exit(1)
 
     prices = df['close'].tolist()
     volumes = df['volume'].tolist()
-    print(f"✓ Fetched {len(prices)} prices")
-    print(f"  Price range: ${min(prices):.2f} - ${max(prices):.2f}")
-    print(f"  Volume range: {min(volumes):.0f} - {max(volumes):.0f}")
-    # Save prices
-    save_prices_to_file(prices, volumes)
+    print(f"✓ Fetched {len(prices)} candles")
 
-    # ===== STEP 2: TRAIN MODEL =====
+    # STEP 2: TRAIN
     print("\n[STEP 2] Training model...")
-    #lookback was 24, but due to inactive hours in market that make noise ->19
-    predictor = PricePredictor(lookback_period=19)
+    predictor = PricePredictor(lookback_period=24)
     success = predictor.train(prices, volumes)
 
     if not success:
-        print("✗ Training failed")
         exit(1)
 
-    print("✓ Training complete")
-
-     # ===== STEP 3: MAKE PREDICTION =====  
-    print("\n[STEP 3] Making prediction on latest data...")
-    direction, confidence = predictor.predict(prices, volumes)
-
+    # STEP 3: PAPER TRADING WITH TRADEMANAGER
+    print("\n[STEP 3] Running paper trading with TradeManager...")
     
-
     
-    if direction is not None:
-        direction_str = "UP" if direction == 1 else "DOWN"
-        print(f"✓ Predicted direction: {direction_str}")
-        print(f"  Confidence: {confidence:.2%}")
-        print(f"  Current price: ${prices[-1]:.2f}")
-    else:
-        print("✗ Prediction failed")
+    tm = TradeManager(stop_loss_pct=1.0, take_profit_pct=2.5)
+    rm = RiskManager(max_open_trades=6, max_daily_loss_pct=0.05 )
+    
+    initial_balance = 1000
+    balance = initial_balance
+    all_trades = []
+    equity = []
+    
+    # Prepare data (same as simulate_profit)
+    X, y = predictor.prepare_data(prices, volumes)
+    
+    if len(X) < 10:
+        print("Not enough data")
         exit(1)
-
-    # ===== STEP 4: SIMULATE PROFIT ===== 
-    print("\n[STEP 4] Simulating profit on test data...")
-    profit, equity = predictor.simulate_profit(prices, volumes)
-
     
-
-    # ===== STEP 5: LIVE VALIDATION =====
-    print("\n[STEP 5] Starting live validation...")
-    result = live_direction_prediction(predictor, prices, interval='1h', wait_minutes=60)
-
-    if result:
-        save_validation_log(result)
-        print("\n✓ Validation complete!")
-
+    split_idx = int(len(X) * 0.8)
+    X_test = X[split_idx:]
+    prices_test = prices[split_idx + predictor.lookback_period:]
+    
+    y_pred = predictor.model.predict(X_test)
+    probs = predictor.model.predict_proba(X_test)
+    
+    # Main trading loop
+    print("\nTrading loop starting...\n")
+    for i in range(len(y_pred)):
+        current_price = prices_test[i]
+        
+        # STEP 1: Check exits FIRST
+        closed_trades = tm.check_exits(current_price)
+        
+        for trade in closed_trades:
+            pnl = trade['pnl']
+            fee_cost = abs(pnl) * 0.001  # 0.1% fee
+            net_pnl = pnl - fee_cost
+            balance += net_pnl
+            all_trades.append(trade)
+            
+            direction_str = "LONG" if trade['direction'] == 1 else "SHORT"
+            reason = trade['reason']
+            print(f"[CLOSE] {direction_str} @ ${current_price:.2f} | P&L: ${net_pnl:.2f} ({pnl*100:.2f}%) | {reason}")
+        
+        # STEP 2: Check if we can open a new trade
+        if len(tm.active_trades) >= 6:
+            equity.append(balance)
+            continue
+        
+        # STEP 3: Get prediction and confidence
+        direction = y_pred[i]
+        confidence = probs[i] [direction]
+        
+        # STEP 4: Skip if low confidence
+        if confidence < 0.6:  # ← LOWERED THRESHOLD
+            equity.append(balance)
+            continue
+        
+        # STEP 5: Calculate position size
+        position_size = rm.position_size(confidence, balance)
+        
+        if position_size == 0:
+            equity.append(balance)
+            continue
+        
+        # STEP 6: Open trade
+        tm.open_trade(current_price, direction, position_size, confidence)
+        
+        direction_str = "LONG" if direction == 1 else "SHORT"
+        print(f"[OPEN]  {direction_str} @ ${current_price:.2f} | Size: ${position_size:.2f} | Confidence: {confidence:.2%}")
+        
+        equity.append(balance)
+    
+    # Check any remaining open trades at end
+    for trade in tm.active_trades:
+        last_price = prices_test[-1]
+        if trade['direction'] == 1:
+            pnl = (last_price - trade['entry_price']) / trade['entry_price'] * trade['position_size']
+        else:
+            pnl = (trade['entry_price'] - last_price) / trade['entry_price'] * trade['position_size']
+        balance += pnl
+        trade['pnl']=pnl
+        trade['exit_price']=last_price
+        trade['reason']='end_of_backtest'
+        all_trades.append(trade)
+    
+    # Calculate final metrics
+    total_trades = len(all_trades)
+    wins = sum(1 for t in all_trades if t['pnl'] > 0)
+    win_rate = wins / total_trades if total_trades > 0 else 0
+    total_return = (balance - initial_balance) / initial_balance
+    
+    # Max drawdown
+    peak = initial_balance
+    max_dd = 0
+    for e in equity:
+        peak = max(peak, e)
+        drawdown = (peak - e) / peak
+        max_dd = max(max_dd, drawdown)
+    
     print("\n" + "="*70)
-    print("DONE!")
+    print("PAPER TRADING RESULTS")
     print("="*70)
+    print(f"Total trades:     {total_trades}")
+    print(f"Winning trades:   {wins}")
+    print(f"Win rate:         {win_rate:.2%}")
+    print(f"Initial balance:  ${initial_balance:.2f}")
+    print(f"Final balance:    ${balance:.2f}")
+    print(f"Total return:     {total_return:.2%}")
+    print(f"Max drawdown:     {max_dd:.2%}")
+    print("="*70)
+    
+    # Save trades to file
+    # OLD (fails on JSON serialization)
+# NEW (convert NumPy types)
+def convert_to_serializable(obj):
+    """Convert NumPy types to Python types for JSON"""
+    import numpy as np
+    if isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, dict):
+        return {k: convert_to_serializable(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_to_serializable(item) for item in obj]
+    return obj
+
+# Convert all trades
+all_trades_serializable = convert_to_serializable(all_trades)
+
+with open('trades_log.json', 'w') as f:
+    json.dump(all_trades_serializable, f, indent=2)
+print(f"\n✓ Saved {total_trades} trades to trades_log.json")
